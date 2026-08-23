@@ -42,20 +42,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
-            try {
-                val sw = StringWriter()
-                throwable.printStackTrace(PrintWriter(sw))
-                crashFile.writeText(sw.toString())
-            } catch (_: Exception) {
-            }
-            val restartIntent = Intent(applicationContext, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-            }
-            startActivity(restartIntent)
-            android.os.Process.killProcess(android.os.Process.myPid())
-            kotlin.system.exitProcess(1)
-        }
+       
 
         val scroll = ScrollView(this)
         val container = android.widget.LinearLayout(this)
