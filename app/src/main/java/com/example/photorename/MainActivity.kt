@@ -2,12 +2,14 @@ package com.example.photorename
 
 import android.app.Activity
 import android.app.RecoverableSecurityException
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
 import android.content.IntentSender
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.widget.Button
 import android.widget.ScrollView
@@ -181,7 +183,13 @@ class MainActivity : AppCompatActivity() {
                     continue
                 }
 
-                pendingRenames.add(uri to newName)
+                val mediaUri = resolveMediaStoreUri(uri)
+                if (mediaUri == null) {
+                    log.append("실패(지원 안되는 파일 형식): ${docFile?.name}\n")
+                    continue
+                }
+
+                pendingRenames.add(mediaUri to newName)
             } catch (e: Exception) {
                 log.append("오류: [${e.javaClass.simpleName}] ${e.message ?: e.toString()}\n")
             }
@@ -244,6 +252,26 @@ class MainActivity : AppCompatActivity() {
         }
 
         logView.text = if (log.isEmpty()) "변환할 이미지가 없습니다." else log.toString()
+    }
+
+    /**
+     * ACTION_OPEN_DOCUMENT로 얻은 문서 provider URI를,
+     * 실제 이름 변경이 가능한 진짜 MediaStore content URI로 변환한다.
+     */
+    private fun resolveMediaStoreUri(uri: Uri): Uri? {
+        return try {
+            val docId = DocumentsContract.getDocumentId(uri)
+            val idPart = docId.substringAfterLast(':')
+            val id = idPart.toLongOrNull() ?: return null
+            val mime = contentResolver.getType(uri) ?: ""
+            if (mime.startsWith("video")) {
+                ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+            } else {
+                ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun computeNewName(
