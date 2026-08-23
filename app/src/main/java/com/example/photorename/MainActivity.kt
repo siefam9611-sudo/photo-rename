@@ -11,8 +11,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
 import androidx.exifinterface.media.ExifInterface
 import java.io.File
-import java.io.PrintWriter
-import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -20,6 +18,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var logView: TextView
     private val PICK_FOLDER_REQUEST = 42
+    private val PICK_FILES_REQUEST = 43
 
     private val exifFormat = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
     private val targetFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
@@ -42,24 +41,28 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-       
-
         val scroll = ScrollView(this)
         val container = android.widget.LinearLayout(this)
         container.orientation = android.widget.LinearLayout.VERTICAL
         container.setPadding(32, 64, 32, 32)
 
-        val pickButton = Button(this).apply {
-            text = "폴더 선택 후 변환 시작"
+        val pickFolderButton = Button(this).apply {
+            text = "폴더 전체 변환"
             setOnClickListener { openFolderPicker() }
         }
 
+        val pickFilesButton = Button(this).apply {
+            text = "파일 여러 개 선택해서 변환"
+            setOnClickListener { openFilesPicker() }
+        }
+
         logView = TextView(this).apply {
-            text = "폴더를 선택하면 변환 로그가 여기에 표시됩니다."
+            text = "폴더 또는 파일들을 선택하면 변환 로그가 여기에 표시됩니다."
             setPadding(0, 32, 0, 0)
         }
 
-        container.addView(pickButton)
+        container.addView(pickFolderButton)
+        container.addView(pickFilesButton)
         container.addView(logView)
         scroll.addView(container)
         setContentView(scroll)
@@ -70,26 +73,62 @@ class MainActivity : AppCompatActivity() {
         startActivityForResult(intent, PICK_FOLDER_REQUEST)
     }
 
+    private fun openFilesPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "image/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        }
+        startActivityForResult(intent, PICK_FILES_REQUEST)
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == PICK_FOLDER_REQUEST && resultCode == Activity.RESULT_OK) {
-            val treeUri: Uri = data?.data ?: return
-            contentResolver.takePersistableUriPermission(
-                treeUri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            val folder = DocumentFile.fromTreeUri(this, treeUri)
-            if (folder != null) {
-                renameAllImages(folder)
+        if (resultCode != Activity.RESULT_OK || data == null) return
+
+        when (requestCode) {
+            PICK_FOLDER_REQUEST -> {
+                val treeUri: Uri = data.data ?: return
+                contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+                val folder = DocumentFile.fromTreeUri(this, treeUri)
+                if (folder != null) {
+                    val files = folder.listFiles().filter { it.isFile && isImage(it.name ?: "") }
+                    renameFiles(files, folder)
+                }
+            }
+            PICK_FILES_REQUEST -> {
+                val uris = mutableListOf<Uri>()
+                val clipData = data.clipData
+                if (clipData != null) {
+                    for (i in 0 until clipData.itemCount) {
+                        uris.add(clipData.getItemAt(i).uri)
+                    }
+                } else {
+                    data.data?.let { uris.add(it) }
+                }
+
+                val files = uris.mapNotNull { uri ->
+                    try {
+                        contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        )
+                    } catch (_: Exception) {
+                    }
+                    DocumentFile.fromSingleUri(this, uri)
+                }.filterNotNull()
+
+                renameFiles(files, null)
             }
         }
     }
 
-    private fun renameAllImages(folder: DocumentFile) {
+    private fun renameFiles(files: List<DocumentFile>, parentFolder: DocumentFile?) {
         val log = StringBuilder()
         val usedNames = HashSet<String>()
-
-        val files = folder.listFiles().filter { it.isFile && isImage(it.name ?: "") }
 
         for (file in files) {
             try {
@@ -101,11 +140,13 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val ext = getExtension(file.name ?: "jpg")
-                var baseName = targetFormat.format(dateTaken)
+                val baseName = targetFormat.format(dateTaken)
                 var newName = "$baseName.$ext"
 
                 var suffix = 1
-                while (usedNames.contains(newName) || fileExistsInFolder(folder, newName)) {
+                while (usedNames.contains(newName) ||
+                    (parentFolder != null && fileExistsInFolder(parentFolder, newName))
+                ) {
                     newName = "${baseName}_$suffix.$ext"
                     suffix++
                 }
@@ -127,7 +168,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        logView.text = log.toString()
+        logView.text = if (log.isEmpty()) "변환할 이미지가 없습니다." else log.toString()
     }
 
     private fun readExifDateTaken(file: DocumentFile): java.util.Date? {
