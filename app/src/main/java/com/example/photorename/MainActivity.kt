@@ -164,7 +164,7 @@ class MainActivity : AppCompatActivity() {
                     log.append("실패: ${file.name}\n")
                 }
             } catch (e: Exception) {
-                log.append("오류(${file.name}): ${e.message}\n")
+                log.append("오류(${file.name}): [${e.javaClass.simpleName}] ${e.message ?: e.toString()}\n")
             }
         }
 
