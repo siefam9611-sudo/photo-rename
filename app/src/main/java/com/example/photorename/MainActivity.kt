@@ -1,10 +1,14 @@
 package com.example.photorename
 
 import android.app.Activity
+import android.app.RecoverableSecurityException
+import android.content.ContentValues
 import android.content.Intent
+import android.content.IntentSender
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
-import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.widget.Button
 import android.widget.ScrollView
 import android.widget.TextView
@@ -20,9 +24,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var logView: TextView
     private val PICK_FOLDER_REQUEST = 42
     private val PICK_FILES_REQUEST = 43
+    private val WRITE_REQUEST_CODE = 44
 
     private val exifFormat = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
     private val targetFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+
+    private var pendingRenames: MutableList<Pair<Uri, String>> = mutableListOf()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -85,10 +92,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (resultCode != Activity.RESULT_OK || data == null) return
 
         when (requestCode) {
             PICK_FOLDER_REQUEST -> {
+                if (resultCode != Activity.RESULT_OK || data == null) return
                 val treeUri: Uri = data.data ?: return
                 contentResolver.takePersistableUriPermission(
                     treeUri,
@@ -97,10 +104,11 @@ class MainActivity : AppCompatActivity() {
                 val folder = DocumentFile.fromTreeUri(this, treeUri)
                 if (folder != null) {
                     val files = folder.listFiles().filter { it.isFile && isImage(it.name ?: "") }
-                    renameFiles(files, folder)
+                    renameFilesInFolder(files, folder)
                 }
             }
             PICK_FILES_REQUEST -> {
+                if (resultCode != Activity.RESULT_OK || data == null) return
                 val uris = mutableListOf<Uri>()
                 val clipData = data.clipData
                 if (clipData != null) {
@@ -110,67 +118,37 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     data.data?.let { uris.add(it) }
                 }
-
-                val files = uris.mapNotNull { uri ->
-                    try {
-                        contentResolver.takePersistableUriPermission(
-                            uri,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                        )
-                    } catch (_: Exception) {
-                    }
-                    DocumentFile.fromSingleUri(this, uri)
-                }.filterNotNull()
-
-                renameFiles(files, null)
+                renameIndividualFilesViaMediaStore(uris)
+            }
+            WRITE_REQUEST_CODE -> {
+                if (resultCode == Activity.RESULT_OK) {
+                    applyPendingRenames()
+                } else {
+                    logView.text = "권한 요청이 거부되어 변경하지 못했습니다. 다시 시도해주세요."
+                    pendingRenames.clear()
+                }
             }
         }
     }
 
-    private fun renameFiles(files: List<DocumentFile>, parentFolder: DocumentFile?) {
+    private fun renameFilesInFolder(files: List<DocumentFile>, folder: DocumentFile) {
         val log = StringBuilder()
         val usedNames = HashSet<String>()
 
         for (file in files) {
             try {
-                val dateTaken = readExifDateTaken(file) ?: readLastModifiedAsDate(file)
-
-                if (dateTaken == null) {
-                    log.append("SKIP (날짜 정보 없음): ${file.name}\n")
-                    continue
-                }
-
-                val ext = getExtension(file.name ?: "jpg")
-                val baseName = targetFormat.format(dateTaken)
-                var newName = "$baseName.$ext"
-
-                var suffix = 1
-                while (usedNames.contains(newName) ||
-                    (parentFolder != null && fileExistsInFolder(parentFolder, newName))
-                ) {
-                    newName = "${baseName}_$suffix.$ext"
-                    suffix++
-                }
-                usedNames.add(newName)
+                val newName = computeNewName(file, usedNames) { name -> fileExistsInFolder(folder, name) }
+                    ?: run {
+                        log.append("SKIP (날짜 정보 없음): ${file.name}\n")
+                        continue
+                    }
 
                 if (file.name == newName) {
                     log.append("동일함, 건너뜀: ${file.name}\n")
                     continue
                 }
 
-                // 폴더 선택 모드는 renameTo()가 지원되지만,
-                // 개별 파일 선택 모드는 renameTo()가 UnsupportedOperationException을 던진다.
-                // DocumentsContract.renameDocument()를 직접 호출해서 우회한다.
-                val renamed = if (parentFolder != null) {
-                    file.renameTo(newName)
-                } else {
-                    try {
-                        DocumentsContract.renameDocument(contentResolver, file.uri, newName) != null
-                    } catch (_: Exception) {
-                        false
-                    }
-                }
-
+                val renamed = file.renameTo(newName)
                 if (renamed) {
                     log.append("변경: ${file.name} -> $newName\n")
                 } else {
@@ -182,6 +160,111 @@ class MainActivity : AppCompatActivity() {
         }
 
         logView.text = if (log.isEmpty()) "변환할 이미지가 없습니다." else log.toString()
+    }
+
+    private fun renameIndividualFilesViaMediaStore(uris: List<Uri>) {
+        val log = StringBuilder()
+        val usedNames = HashSet<String>()
+        pendingRenames.clear()
+
+        for (uri in uris) {
+            try {
+                val docFile = DocumentFile.fromSingleUri(this, uri)
+                val newName = computeNewName(docFile, usedNames) { false }
+                    ?: run {
+                        log.append("SKIP (날짜 정보 없음): ${docFile?.name}\n")
+                        continue
+                    }
+
+                if (docFile?.name == newName) {
+                    log.append("동일함, 건너뜀: ${docFile?.name}\n")
+                    continue
+                }
+
+                pendingRenames.add(uri to newName)
+            } catch (e: Exception) {
+                log.append("오류: [${e.javaClass.simpleName}] ${e.message ?: e.toString()}\n")
+            }
+        }
+
+        if (pendingRenames.isEmpty()) {
+            logView.text = if (log.isEmpty()) "변환할 이미지가 없습니다." else log.toString()
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val pendingIntent = MediaStore.createWriteRequest(
+                    contentResolver,
+                    pendingRenames.map { it.first }
+                )
+                startIntentSenderForResult(
+                    pendingIntent.intentSender,
+                    WRITE_REQUEST_CODE,
+                    null, 0, 0, 0
+                )
+                logView.text = (log.toString() + "권한 확인 창이 뜹니다. 허용을 눌러주세요.").trim()
+                return
+            } catch (e: Exception) {
+                log.append("권한 요청 실패: [${e.javaClass.simpleName}] ${e.message ?: e.toString()}\n")
+            }
+        }
+
+        applyPendingRenames(log)
+    }
+
+    private fun applyPendingRenames(initialLog: StringBuilder = StringBuilder()) {
+        val log = initialLog
+        val toApply = pendingRenames.toList()
+        pendingRenames.clear()
+
+        for ((uri, newName) in toApply) {
+            try {
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, newName)
+                }
+                val rows = contentResolver.update(uri, values, null, null)
+                if (rows > 0) {
+                    log.append("변경 완료: -> $newName\n")
+                } else {
+                    log.append("실패(적용 안됨): $newName\n")
+                }
+            } catch (e: RecoverableSecurityException) {
+                try {
+                    val intentSender: IntentSender = e.userAction.actionIntent.intentSender
+                    pendingRenames.add(uri to newName)
+                    startIntentSenderForResult(intentSender, WRITE_REQUEST_CODE, null, 0, 0, 0)
+                    return
+                } catch (ex: Exception) {
+                    log.append("권한 요청 실패: ${ex.message}\n")
+                }
+            } catch (e: Exception) {
+                log.append("오류: [${e.javaClass.simpleName}] ${e.message ?: e.toString()}\n")
+            }
+        }
+
+        logView.text = if (log.isEmpty()) "변환할 이미지가 없습니다." else log.toString()
+    }
+
+    private fun computeNewName(
+        file: DocumentFile?,
+        usedNames: MutableSet<String>,
+        existsCheck: (String) -> Boolean
+    ): String? {
+        if (file == null) return null
+        val dateTaken = readExifDateTaken(file) ?: readLastModifiedAsDate(file) ?: return null
+
+        val ext = getExtension(file.name ?: "jpg")
+        val baseName = targetFormat.format(dateTaken)
+        var newName = "$baseName.$ext"
+
+        var suffix = 1
+        while (usedNames.contains(newName) || existsCheck(newName)) {
+            newName = "${baseName}_$suffix.$ext"
+            suffix++
+        }
+        usedNames.add(newName)
+        return newName
     }
 
     private fun readExifDateTaken(file: DocumentFile): java.util.Date? {
