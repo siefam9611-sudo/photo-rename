@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.widget.Button
 import android.widget.ScrollView
 import android.widget.TextView
@@ -157,7 +158,19 @@ class MainActivity : AppCompatActivity() {
                     continue
                 }
 
-                val renamed = file.renameTo(newName)
+                // 폴더 선택 모드는 renameTo()가 지원되지만,
+                // 개별 파일 선택 모드는 renameTo()가 UnsupportedOperationException을 던진다.
+                // DocumentsContract.renameDocument()를 직접 호출해서 우회한다.
+                val renamed = if (parentFolder != null) {
+                    file.renameTo(newName)
+                } else {
+                    try {
+                        DocumentsContract.renameDocument(contentResolver, file.uri, newName) != null
+                    } catch (_: Exception) {
+                        false
+                    }
+                }
+
                 if (renamed) {
                     log.append("변경: ${file.name} -> $newName\n")
                 } else {
