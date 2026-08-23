@@ -138,10 +138,10 @@ class MainActivity : AppCompatActivity() {
         for (file in files) {
             try {
                 val newName = computeNewName(file, usedNames) { name -> fileExistsInFolder(folder, name) }
-                    ?: run {
-                        log.append("SKIP (날짜 정보 없음): ${file.name}\n")
-                        continue
-                    }
+                if (newName == null) {
+                    log.append("SKIP (날짜 정보 없음): ${file.name}\n")
+                    continue
+                }
 
                 if (file.name == newName) {
                     log.append("동일함, 건너뜀: ${file.name}\n")
@@ -171,10 +171,10 @@ class MainActivity : AppCompatActivity() {
             try {
                 val docFile = DocumentFile.fromSingleUri(this, uri)
                 val newName = computeNewName(docFile, usedNames) { false }
-                    ?: run {
-                        log.append("SKIP (날짜 정보 없음): ${docFile?.name}\n")
-                        continue
-                    }
+                if (newName == null) {
+                    log.append("SKIP (날짜 정보 없음): ${docFile?.name}\n")
+                    continue
+                }
 
                 if (docFile?.name == newName) {
                     log.append("동일함, 건너뜀: ${docFile?.name}\n")
