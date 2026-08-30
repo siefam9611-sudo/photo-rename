@@ -254,21 +254,50 @@ class MainActivity : AppCompatActivity() {
         logView.text = if (log.isEmpty()) "변환할 이미지가 없습니다." else log.toString()
     }
 
-    /**
-     * ACTION_OPEN_DOCUMENT로 얻은 문서 provider URI를,
-     * 실제 이름 변경이 가능한 진짜 MediaStore content URI로 변환한다.
-     */
     private fun resolveMediaStoreUri(uri: Uri): Uri? {
         return try {
             val docId = DocumentsContract.getDocumentId(uri)
-            val idPart = docId.substringAfterLast(':')
-            val id = idPart.toLongOrNull() ?: return null
             val mime = contentResolver.getType(uri) ?: ""
-            if (mime.startsWith("video")) {
-                ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
-            } else {
-                ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+            val isVideo = mime.startsWith("video")
+
+            val idPart = docId.substringAfterLast(':')
+            val numericId = idPart.toLongOrNull()
+            if (numericId != null && (docId.startsWith("image") || docId.startsWith("video"))) {
+                return if (isVideo) {
+                    ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, numericId)
+                } else {
+                    ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, numericId)
+                }
             }
+
+            if (docId.contains(':')) {
+                val volume = docId.substringBefore(':')
+                val relativePath = docId.substringAfter(':')
+                val basePath = if (volume == "primary") {
+                    android.os.Environment.getExternalStorageDirectory().absolutePath
+                } else {
+                    "/storage/$volume"
+                }
+                val fullPath = "$basePath/$relativePath"
+
+                val collection = MediaStore.Files.getContentUri("external")
+                val projection = arrayOf(MediaStore.Files.FileColumns._ID)
+                contentResolver.query(
+                    collection, projection,
+                    "${MediaStore.Files.FileColumns.DATA} = ?",
+                    arrayOf(fullPath), null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID))
+                        return if (isVideo) {
+                            ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                        } else {
+                            ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+                        }
+                    }
+                }
+            }
+            null
         } catch (e: Exception) {
             null
         }
