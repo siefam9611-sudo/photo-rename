@@ -1,11 +1,13 @@
 package com.example.photorename
 
+import android.Manifest
 import android.app.Activity
 import android.app.RecoverableSecurityException
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
 import android.content.IntentSender
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -15,6 +17,8 @@ import android.widget.Button
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.exifinterface.media.ExifInterface
 import java.io.File
@@ -27,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private val PICK_FOLDER_REQUEST = 42
     private val PICK_FILES_REQUEST = 43
     private val WRITE_REQUEST_CODE = 44
+    private val READ_MEDIA_PERMISSION_REQUEST = 45
 
     private val exifFormat = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
     private val targetFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
@@ -84,12 +89,40 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openFilesPicker() {
+        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.READ_MEDIA_IMAGES
+        } else {
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(permission), READ_MEDIA_PERMISSION_REQUEST)
+            return
+        }
+        launchFilesPickerIntent()
+    }
+
+    private fun launchFilesPickerIntent() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             type = "image/*"
             addCategory(Intent.CATEGORY_OPENABLE)
             putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
         }
         startActivityForResult(intent, PICK_FILES_REQUEST)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == READ_MEDIA_PERMISSION_REQUEST) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                launchFilesPickerIntent()
+            } else {
+                logView.text = "사진에 접근할 권한이 필요합니다. 다시 시도해주세요."
+            }
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
